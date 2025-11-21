@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marine Sound Classifier</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌊 Marine Sound Classifier</h1>
+            <p>Record audio from your microphone to identify marine mammal species in real-time.</p>
+        </header>
+        
+        <main>
+            <div class="recording-wrapper">
+                <div class="recording-status" id="recording-status">
+                    <span id="status-text">Ready to record</span>
+                    <div class="recording-indicator" id="recording-indicator"></div>
+                </div>
+                
+                <div class="button-group">
+                    <button id="start-btn" class="record-btn start-btn">
+                        <span>🎤 Start Recording</span>
+                    </button>
+                    <button id="stop-btn" class="record-btn stop-btn" disabled>
+                        <span>⏹ Stop & Classify</span>
+                    </button>
+                </div>
+                
+                <div class="timer" id="timer">00:00</div>
+            </div>
+            
+            <div class="result-container">
+                <p class="result-text" id="result-text">{{ result }}</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let stream;
+        let timerInterval;
+        let seconds = 0;
+
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const statusText = document.getElementById('status-text');
+        const recordingIndicator = document.getElementById('recording-indicator');
+        const timer = document.getElementById('timer');
+        const resultText = document.getElementById('result-text');
+
+        // Start recording
+        startBtn.addEventListener('click', async () => {
+            try {
+                // Request microphone access
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create MediaRecorder
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    // Convert audio chunks to blob
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    
+                    // Convert to WAV format
+                    const wavBlob = await convertToWav(audioBlob);
+                    
+                    // Convert to base64
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                        const base64Audio = reader.result;
+                        
+                        // Send to server
+                        try {
+                            statusText.textContent = 'Processing...';
+                            resultText.textContent = '';
+                            
+                            const response = await fetch('/record', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ audio: base64Audio })
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                resultText.textContent = data.prediction;
+                                statusText.textContent = 'Recording complete';
+                            } else {
+                                resultText.textContent = 'Error: ' + (data.error || 'Unknown error');
+                                statusText.textContent = 'Error occurred';
+                            }
+                        } catch (error) {
+                            resultText.textContent = 'Error: ' + error.message;
+                            statusText.textContent = 'Error occurred';
+                        }
+                    };
+                    reader.readAsDataURL(wavBlob);
+                    
+                    // Stop all tracks
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                // Start recording
+                mediaRecorder.start();
+                
+                // Update UI
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusText.textContent = 'Recording...';
+                recordingIndicator.classList.add('active');
+                
+                // Start timer
+                seconds = 0;
+                timerInterval = setInterval(() => {
+                    seconds++;
+                    const mins = Math.floor(seconds / 60);
+                    const secs = seconds % 60;
+                    timer.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                }, 1000);
+                
+            } catch (error) {
+                alert('Error accessing microphone: ' + error.message);
+                statusText.textContent = 'Microphone access denied';
+            }
+        });
+
+        // Stop recording
+        stopBtn.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                
+                // Update UI
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                recordingIndicator.classList.remove('active');
+                
+                // Stop timer
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                }
+            }
+        });
+
+        // Convert WebM to WAV using Web Audio API
+        async function convertToWav(audioBlob) {
+            try {
+                // Create audio context
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Decode the WebM audio data
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // Convert audio buffer to WAV
+                const wavBuffer = audioBufferToWav(audioBuffer);
+                const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+                
+                return wavBlob;
+            } catch (error) {
+                console.error('Error converting to WAV:', error);
+                // Fallback: return original blob if conversion fails
+                return audioBlob;
+            }
+        }
+
+        // Convert AudioBuffer to WAV format
+        function audioBufferToWav(buffer) {
+            const numOfChan = buffer.numberOfChannels;
+            const length = buffer.length * numOfChan * 2 + 44;
+            const arrayBuffer = new ArrayBuffer(length);
+            const view = new DataView(arrayBuffer);
+            const channels = [];
+            let offset = 0;
+            let sample;
+
+            // Write WAV header
+            const writeString = (str) => {
+                for (let i = 0; i < str.length; i++) {
+                    view.setUint8(offset + i, str.charCodeAt(i));
+                }
+            };
+
+            // RIFF identifier
+            writeString('RIFF');
+            offset += 4;
+            // File length
+            view.setUint32(offset, length - 8, true);
+            offset += 4;
+            // RIFF type
+            writeString('WAVE');
+            offset += 4;
+            // Format chunk identifier
+            writeString('fmt ');
+            offset += 4;
+            // Format chunk length
+            view.setUint32(offset, 16, true);
+            offset += 4;
+            // Sample format (raw)
+            view.setUint16(offset, 1, true);
+            offset += 2;
+            // Channel count
+            view.setUint16(offset, numOfChan, true);
+            offset += 2;
+            // Sample rate
+            view.setUint32(offset, buffer.sampleRate, true);
+            offset += 4;
+            // Byte rate (sample rate * block align)
+            view.setUint32(offset, buffer.sampleRate * 2 * numOfChan, true);
+            offset += 4;
+            // Block align (channel count * bytes per sample)
+            view.setUint16(offset, numOfChan * 2, true);
+            offset += 2;
+            // Bits per sample
+            view.setUint16(offset, 16, true);
+            offset += 2;
+            // Data chunk identifier
+            writeString('data');
+            offset += 4;
+            // Data chunk length
+            view.setUint32(offset, length - offset - 4, true);
+            offset += 4;
+
+            // Convert audio data to 16-bit PCM
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                channels.push(buffer.getChannelData(i));
+            }
+
+            // Write audio samples (interleaved)
+            for (let i = 0; i < buffer.length; i++) {
+                for (let channel = 0; channel < numOfChan; channel++) {
+                    sample = Math.max(-1, Math.min(1, channels[channel][i]));
+                    sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+                    view.setInt16(offset, sample, true);
+                    offset += 2;
+                }
+            }
+
+            return arrayBuffer;
+        }
+    </script>
+</body>
+</html>
