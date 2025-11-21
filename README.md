@@ -24,8 +24,8 @@ audio-classification-webapp
 
 1. **Clone the repository:**
    ```
-   git clone <repository-url>
-   cd audio-classification-webapp
+   git clone https://github.com/Kishor-J-K/Final-project.git
+   cd Final-project
    ```
 
 2. **Create a virtual environment:**
